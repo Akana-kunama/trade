@@ -65,59 +65,70 @@ class NPatternSelector(SelectorBase):
             print(f"❌ 读取 stock.csv 失败: {e}")
             return set(), pd.DataFrame()
 
-    def run(self, date=None):
+    def run(self, date=None, save=True):
         print(f">>> [Strategy] 启动 {self.strategy_name} ...")
-        
-        # 1. 加载白名单
+
+        target_date = None
+        if date is not None:
+            target_date = pd.to_datetime(date).normalize()
+            print(f"📅 指定选股日: {target_date.date()}")
+
         valid_whitelist, stock_info_df = self.load_stock_metadata()
-        
-        # 2. 扫描 Parquet 文件
+
         stock_dir = MARKET_DATA_DIR / "stock_daily"
         files = list(stock_dir.glob("*.parquet"))
         print(f"📋 扫描行情文件数: {len(files)}")
 
         selected_pool = []
 
-        # 3. 遍历计算
-        for file_path in files:
-            # 解析代码: 000001.SZ.parquet -> 000001
-            # 注意: 如果文件名是 000001.SZ.parquet，file_path.stem 是 000001.SZ
-            file_stem = file_path.stem 
-            code_key = file_stem[:6]  # 取前6位纯数字
+        # ========= 工具：把 code_key 转成带后缀的标准 code =========
+        def code_key_to_full(code_key: str) -> str:
+            code_key = str(code_key).zfill(6)
+            if code_key.startswith(("60", "68", "90")):
+                return f"{code_key}.SH"
+            elif code_key.startswith(("00", "30", "20")):
+                return f"{code_key}.SZ"
+            elif code_key.startswith(("8", "4")):
+                return f"{code_key}.BJ"
+            else:
+                return f"{code_key}.SZ"
 
-            # [过滤 1] 板块过滤 (主板 + 创业板)
+        for file_path in files:
+            file_stem = file_path.stem
+            code_key = file_stem[:6]
+
+            # 主板 + 创业板过滤
             if not re.match(r'^(60|00|30)', code_key):
                 continue
 
-            # [过滤 2] ST / 停牌过滤 (白名单)
             if valid_whitelist and code_key not in valid_whitelist:
                 continue
 
             try:
-                # 读取 Parquet
                 df = pd.read_parquet(file_path)
-                if len(df) < 5: continue  # 数据太少
+                if len(df) < 5:
+                    continue
 
-                # 确保按时间排序
                 df.sort_index(inplace=True)
 
-                # 取最后几行数据
-                # 你的逻辑是用 iloc[-1] 代表最新一天。
-                # 如果是盘后跑，就是今天收盘数据。
-                curr = df.iloc[-1]
-                prev1 = df.iloc[-2]
-                prev2 = df.iloc[-3]
-                prev3 = df.iloc[-4]
+                # 根据 date 选 curr
+                if target_date is None:
+                    curr_idx = len(df) - 1
+                else:
+                    idx = df.index.searchsorted(target_date, side='right') - 1
+                    if idx < 0:
+                        continue
+                    curr_idx = idx
 
-                # 提取关键字段 (使用标准常量)
-                # limit_up_flag: True/False
-                is_curr_limit = curr.get(BarFields.LIMIT_UP) == curr.get(BarFields.CLOSE) 
-                # 如果你在 Adapter 里已经生成了 'limit_up_flag' 列更好，如果没有，现场算一下:
-                # 你的Adapter里没有显示生成 limit_up_flag 列，而是生成了 limit_up 价格
-                # 所以这里我们要动态判断: close == limit_up
-                
+                if curr_idx < 3:
+                    continue
+
+                curr = df.iloc[curr_idx]
+                prev1 = df.iloc[curr_idx - 1]
+                prev2 = df.iloc[curr_idx - 2]
+                prev3 = df.iloc[curr_idx - 3]
+
                 def is_limit(row):
-                    # 容错处理：考虑到浮点数精度，用 isclose 或者 差值小于 0.01
                     return abs(row[BarFields.CLOSE] - row[BarFields.LIMIT_UP]) < 0.01
 
                 curr_limit = is_limit(curr)
@@ -126,72 +137,117 @@ class NPatternSelector(SelectorBase):
                 prev3_limit = is_limit(prev3)
 
                 reason = None
-                
-                # 获取近10天的涨停情况，用于排除妖股
-                # 既然要算 sum，我们需要构造一个 Series
-                # 这里为了性能，只取最后10行算一下
-                last_10 = df.iloc[-10:]
-                limit_counts = last_10.apply(is_limit, axis=1) # Boolean Series
 
-                # === 策略逻辑复刻 ===
-                
-                # 模式 A: 1板1调 (昨天板，今天断板且不破板开)
+                start_10 = max(0, curr_idx - 9)
+                last_10 = df.iloc[start_10:curr_idx + 1]
+                limit_counts = last_10.apply(is_limit, axis=1)
+                n = len(last_10)
+
+                # 1板1调
                 if prev1_limit and not curr_limit:
-                    # 排除妖股: 过去[倒数第8天 到 倒数第2天] 涨停数 < 2
-                    if limit_counts.iloc[-8:-2].sum() < 2:
+                    sub = limit_counts.iloc[max(0, n - 8):max(0, n - 2)]
+                    if sub.sum() < 2:
                         if curr[BarFields.CLOSE] >= prev1[BarFields.OPEN]:
                             reason = "1板1调"
 
-                # 模式 B: 1板2调 (前天板，昨今断，不破板开)
+                # 1板2调
                 elif prev2_limit and not prev1_limit and not curr_limit:
-                    if limit_counts.iloc[-9:-3].sum() < 2:
+                    sub = limit_counts.iloc[max(0, n - 9):max(0, n - 3)]
+                    if sub.sum() < 2:
                         if curr[BarFields.CLOSE] >= prev2[BarFields.OPEN]:
                             reason = "1板2调"
 
-                # 模式 C: 1板3调
+                # 1板3调
                 elif prev3_limit and not prev2_limit and not prev1_limit and not curr_limit:
-                    if limit_counts.iloc[-10:-4].sum() < 2:
+                    sub = limit_counts.iloc[max(0, n - 10):max(0, n - 4)]
+                    if sub.sum() < 2:
                         if curr[BarFields.CLOSE] >= prev3[BarFields.OPEN]:
                             reason = "1板3调"
 
                 if reason:
-                    # 计算量比 (和过去5日均量相比)
-                    # volume 是 float
-                    vol_ma5 = df[BarFields.VOLUME].iloc[-6:-1].mean()
+                    # ====== 量比 ======
+                    vol_start = max(0, curr_idx - 5)
+                    vol_end = curr_idx
+                    vol_hist = df[BarFields.VOLUME].iloc[vol_start:vol_end]
+                    vol_ma5 = vol_hist.mean() if len(vol_hist) > 0 else 0
                     vol_ratio = round(curr[BarFields.VOLUME] / vol_ma5, 2) if vol_ma5 > 0 else 0
 
+                    # ====== 关键修复：为不同 pattern 选对“板日”bar ======
+                    if reason == "1板1调":
+                        board_bar = prev1
+                        n_adjust = 1
+                    elif reason == "1板2调":
+                        board_bar = prev2
+                        n_adjust = 2
+                    else:  # 1板3调
+                        board_bar = prev3
+                        n_adjust = 3
+
+                    # ====== 统一 code 输出：确保 parquet 可对齐 ======
+                    code_full = code_key_to_full(code_key)
+
+                    select_close = float(curr[BarFields.CLOSE])
+                    board_limit = float(board_bar[BarFields.LIMIT_UP])
+                    board_close = float(board_bar[BarFields.CLOSE])
+
+                    # 你要的两类调整幅度
+                    # 1) 板日->选股日 总调整幅度（这里用“板日开盘 board_limit”作为基准价）
+                    board_limit_to_select_close_adj_pct = (select_close - board_limit) / board_limit * 100 if board_limit != 0 else np.nan
+                    board_close_to_select_close_adj_pct = (select_close - board_close) / board_close * 100 if board_limit != 0 else np.nan
+                    # 2) 平均每调幅度
+                    avg_limit_to_close_adj_per = board_limit_to_select_close_adj_pct / n_adjust if n_adjust else np.nan
+                    avg_close_to_close_adj_per = board_close_to_select_close_adj_pct / n_adjust if n_adjust else np.nan
+
+
                     selected_pool.append({
-                        'code_key': code_key,
-                        'code': curr[BarFields.CODE], # 带后缀的代码
-                        'Close': curr[BarFields.CLOSE],
-                        'Vol_Ratio': vol_ratio,
-                        'Pattern': reason,
-                        'select_time': curr.name.strftime('%Y-%m-%d') # 取那一行的 Index 时间
+                        "code_key": code_key,
+                        "code": code_full,  # ✅ 固定输出 000001.SZ/SH
+
+                        # ===== 选股日信息 =====
+                        "select_time": curr.name.strftime("%Y-%m-%d"),
+                        "Close": select_close,
+
+                        # ===== 板日信息（新增，口径明确）=====
+                        "board_date": board_bar.name.strftime("%Y-%m-%d"),
+                        "board_limit": board_limit, # 板日涨停价格
+                        "board_close": board_close, # 板日收盘价格
+
+                        # ===== 你关心的指标（直接落表）=====
+                        "Pattern": reason,
+                        "n_adjust": n_adjust,
+                        "board_limit_to_select_close_adj_pct": board_limit_to_select_close_adj_pct,
+                        "avg_limit_to_close_adj_per": avg_limit_to_close_adj_per,
+                        "board_close_to_select_close_adj_pct": board_limit_to_select_close_adj_pct,
+                        "avg_close_to_close_adj_per": avg_close_to_close_adj_per,
+
+                        # # ===== 其它原有字段 =====
+                        "Vol_Ratio": vol_ratio,
                     })
 
-            except Exception as e:
-                # print(f"Error: {code_key} - {e}")
+            except Exception:
                 continue
 
-        # 4. 合并与保存
+        # 合并与保存
         if selected_pool:
             res_df = pd.DataFrame(selected_pool)
-            
+
             # 合并行业信息
             if not stock_info_df.empty:
-                final_df = pd.merge(res_df, stock_info_df, on='code_key', how='left')
+                final_df = pd.merge(res_df, stock_info_df, on="code_key", how="left")
             else:
                 final_df = res_df
 
             # 排序
-            if 'industry_name' in final_df.columns:
-                final_df.sort_values(by=['industry_name', 'Pattern'], inplace=True)
-            
-            # 5. 调用父类方法保存
-            # date 参数使用最后一天数据的日期
-            self.save_result(final_df)
-        else:
-            print(f"[{self.strategy_name}] ⚠️ 今日无符合条件股票")
+            if "industry_name" in final_df.columns:
+                final_df.sort_values(by=["industry_name", "Pattern"], inplace=True)
+
+            if save:
+                self.save_result(final_df, date_str=date)
+
+            return final_df
+
+        return pd.DataFrame()
+
 
 # 调试用
 if __name__ == "__main__":
