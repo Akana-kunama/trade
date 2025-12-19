@@ -2,3 +2,7 @@ pandas
 numpy
 requests
 pyyaml
+pyarrow
+fastparquet
+matplotlib
+pandas_market_calendar
