@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Module: selector_analyzer_base.py
-Description: 通用选股策略分析基类（SelectorAnalyzerBase） - 增强版
+Description: 通用选股策略分析基类（SelectorAnalyzerBase）
 - 支持：按时间段自动载入 pool_storage 下的 YYYYMMDD.csv
 - 支持：自动判别交易日（优先 pandas_market_calendars；否则 fallback 工作日）
 """

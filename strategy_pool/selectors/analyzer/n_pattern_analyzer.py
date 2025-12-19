@@ -10,12 +10,8 @@ from strategy_pool.selectors.analyzer.base_analyzer import SelectorAnalyzerBase
 
 class NPatternAnalyzer(SelectorAnalyzerBase):
     """
-    分析 1板n调 (n=1,2,3)：
-    1) 板日基准价(用Prev_Open代理) -> 选股日Close 的总调整幅度
-    2) 平均每调幅度 = 总调整幅度 / n
-    3) 上述两指标 与 “极值 / (极值日-选股日)” 的关系（散点图）
-       这里“极值/(极值日-选股日)”更合理的表达是：
-       - 极值收益% / 达到极值所用交易日数  （即“每交易日收益速度”）
+    分析 1板n调 (n=1,2,3)并构造所需数据集
+
     """
 
     def __init__(
@@ -320,7 +316,7 @@ class NPatternAnalyzer(SelectorAnalyzerBase):
 
             # ====== 交易规则标签：T+1买 T+2卖 ======
             ret_t1o_t2c_pct = (close_t2 - open_t1) / open_t1 * 100.0
-            win_t1o_t2c = int(ret_t1o_t2c_pct > 0)
+            win_t1o_t2c = int(ret_t1o_t2c_pct > 0.3)
 
             records.append({
                 "code": self.normalize_code(code),
