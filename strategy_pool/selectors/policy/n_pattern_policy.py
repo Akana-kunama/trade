@@ -1,199 +1,222 @@
 # -*- coding: utf-8 -*-
-"""
-Module: n_pattern_policy.py
-Description: N字反包选股策略 (Pro版) - 适配 QuantProject 2.0
-"""
+import sys
 import pandas as pd
 import numpy as np
 import re
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
-# 引入项目组件
-from config import MARKET_DATA_DIR, BASIC_INFO_DIR
-from common.data_structs import BarFields
+# ================= 路径 Hack (关键修复) =================
+# 让脚本能找到项目根目录 D:\work\trade
+# 当前文件在 strategy_pool/selectors/policy/ (3层深)
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+# ================= 正常 Import =================
+# 注意：是从 config.path_config 导入，而不是直接从 config 导入
+from config.path_config import BASIC_INFO_DIR, FACTOR_STORE_DIR, MARKET_FACTOR_PATH
 from strategy_pool.selectors.policy.base_selector import SelectorBase
+
+# 引入 AI 工厂组件
+from factor_lab.service.data_provider import FeatureService
+from model_factory.registry import ModelRegistry
 
 class NPatternSelector(SelectorBase):
     def __init__(self):
-        # 策略名，对应 pool_storage/n_pattern_rebound 文件夹
         super().__init__(strategy_name="n_pattern_rebound")
         
-        # 基础信息表路径
+        # 1. 基础服务初始化
+        self.svc = FeatureService(str(FACTOR_STORE_DIR), str(MARKET_FACTOR_PATH))
+        self.registry = ModelRegistry()
+        
+        # 2. 加载基础信息 (用于ST过滤)
         self.stock_info_path = BASIC_INFO_DIR / "stock.csv"
+        self.valid_whitelist, self.info_df = self._load_stock_info()
 
-    def load_stock_metadata(self):
-        """
-        加载 stock.csv (复用你的逻辑)
-        """
+        # 3. [自动加载] 加载 n_pattern 系列最新的三个模型
+        self.models = {}
+        self.features = [] 
+        self._load_latest_models()
+
+    def _load_stock_info(self):
+        """读取 ST 状态 / 白名单"""
         if not self.stock_info_path.exists():
-            print(f"❌ [Error] 找不到 {self.stock_info_path}")
+            print(f"⚠️ [Warn] 股票信息表不存在: {self.stock_info_path}")
             return set(), pd.DataFrame()
-
         try:
-            # 尝试读取
+            # 兼容读取
             try:
-                stock_info = pd.read_csv(self.stock_info_path, encoding='utf-8')
-            except UnicodeDecodeError:
-                stock_info = pd.read_csv(self.stock_info_path, encoding='gbk')
-
-            # 1. 提取6位代码
-            # 假设 CSV 里代码列名叫 'order_book_id' 或 'code'，这里做个兼容处理
-            code_col = 'order_book_id' if 'order_book_id' in stock_info.columns else 'code'
-            if code_col not in stock_info.columns:
-                print("⚠️ stock.csv 缺少代码列")
-                return set(), pd.DataFrame()
+                df = pd.read_csv(self.stock_info_path, dtype={'code': str}, encoding='utf-8')
+            except:
+                df = pd.read_csv(self.stock_info_path, dtype={'code': str}, encoding='gbk')
                 
-            stock_info['code_key'] = stock_info[code_col].astype(str).str[:6]
-
-            # 2. 筛选 Normal (如果有状态列)
-            if 'special_type' in stock_info.columns:
-                normal_df = stock_info[stock_info['special_type'] == 'Normal']
-            else:
-                normal_df = stock_info
-
-            # 3. 提取需要的字段
-            cols_to_keep = ['code_key', 'symbol', 'sector_code_name', 'industry_name']
-            cols_to_keep = [c for c in cols_to_keep if c in stock_info.columns]
+            # 假设 CSV 里有 special_type 列，没有就全都要
+            if 'special_type' in df.columns:
+                df = df[df['special_type'] == 'Normal']
             
-            info_df = stock_info[cols_to_keep].copy()
-            valid_codes = set(normal_df['code_key'].values)
-            
-            return valid_codes, info_df
-
+            # 标准化 code 为 6位字符串
+            if 'code' in df.columns:
+                valid_codes = set(df['code'].apply(lambda x: str(x)[:6]))
+                return valid_codes, df
+            return set(), df
         except Exception as e:
-            print(f"❌ 读取 stock.csv 失败: {e}")
+            print(f"⚠️ 加载股票信息出错: {e}")
             return set(), pd.DataFrame()
+
+    def _load_latest_models(self):
+        """自动去 Model Zoo 找最新的三个模型"""
+        target_models = {
+            "lgbm": "n_pattern/v1_lgbm",
+            "xgb":  "n_pattern/v1_xgb",
+            "cat":  "n_pattern/v1_cat"
+        }
+        
+        first_load = True
+        for name, prefix in target_models.items():
+            # 自动查找最新ID
+            latest_id = self.registry.get_latest_id(prefix)
+            
+            if not latest_id:
+                print(f"❌ [Error] 找不到 {name} 的模型！请先运行 scripts/train_n_pattern.py")
+                continue
+                
+            try:
+                # 加载
+                model, meta = self.registry.load_model(latest_id)
+                self.models[name] = model
+                
+                if first_load:
+                    self.features = meta['config']['features']
+                    first_load = False
+                print(f"✅ 模型 {name} 加载成功")
+            except Exception as e:
+                print(f"❌ 模型 {name} 加载失败: {e}")
 
     def run(self, date=None):
-        print(f">>> [Strategy] 启动 {self.strategy_name} ...")
+        """
+        选股主入口
+        """
+        # 如果没传日期，默认今天
+        if date is None:
+            date = datetime.now().strftime('%Y-%m-%d')
         
-        # 1. 加载白名单
-        valid_whitelist, stock_info_df = self.load_stock_metadata()
+        print(f"\n>>> [AI Strategy] 启动 N字反转选股: {date}")
         
-        # 2. 扫描 Parquet 文件
-        stock_dir = MARKET_DATA_DIR / "stock_daily"
-        files = list(stock_dir.glob("*.parquet"))
-        print(f"📋 扫描行情文件数: {len(files)}")
+        # 1. 扫描所有股票代码
+        all_codes = [f.stem for f in FACTOR_STORE_DIR.glob("*.parquet")]
+        print(f"📋 扫描因子库，共 {len(all_codes)} 只股票")
+        target_codes = [c for c in all_codes if re.match(r'^(00|60)', c)]
+        print(f"📋 扫描主板股票: {len(target_codes)} 只 (已过滤300/688)")
+        # 2. 获取数据 (Features + Signal)
+        if not self.features:
+            print("❌ 模型未加载成功，无法获取特征列表")
+            return
 
-        selected_pool = []
+        req_cols = list(set(self.features + ['n_pattern_signal', 'close']))
+        
+        try:
+            df_today = self.svc.get_features(
+                codes=target_codes,
+                factor_names=req_cols,
+                start_date=date,
+                end_date=date
+            )
+        except Exception as e:
+            print(f"❌ 获取特征数据失败: {e}")
+            return
+        
+        if df_today.empty:
+            print(f"⚠️ 日期 {date} 无数据 (可能是非交易日或数据未更新)")
+            return
 
-        # 3. 遍历计算
-        for file_path in files:
-            # 解析代码: 000001.SZ.parquet -> 000001
-            # 注意: 如果文件名是 000001.SZ.parquet，file_path.stem 是 000001.SZ
-            file_stem = file_path.stem 
-            code_key = file_stem[:6]  # 取前6位纯数字
-
-            # [过滤 1] 板块过滤 (主板 + 创业板)
-            if not re.match(r'^(60|00|30)', code_key):
-                continue
-
-            # [过滤 2] ST / 停牌过滤 (白名单)
-            if valid_whitelist and code_key not in valid_whitelist:
-                continue
-
-            try:
-                # 读取 Parquet
-                df = pd.read_parquet(file_path)
-                if len(df) < 5: continue  # 数据太少
-
-                # 确保按时间排序
-                df.sort_index(inplace=True)
-
-                # 取最后几行数据
-                # 你的逻辑是用 iloc[-1] 代表最新一天。
-                # 如果是盘后跑，就是今天收盘数据。
-                curr = df.iloc[-1]
-                prev1 = df.iloc[-2]
-                prev2 = df.iloc[-3]
-                prev3 = df.iloc[-4]
-
-                # 提取关键字段 (使用标准常量)
-                # limit_up_flag: True/False
-                is_curr_limit = curr.get(BarFields.LIMIT_UP) == curr.get(BarFields.CLOSE) 
-                # 如果你在 Adapter 里已经生成了 'limit_up_flag' 列更好，如果没有，现场算一下:
-                # 你的Adapter里没有显示生成 limit_up_flag 列，而是生成了 limit_up 价格
-                # 所以这里我们要动态判断: close == limit_up
-                
-                def is_limit(row):
-                    # 容错处理：考虑到浮点数精度，用 isclose 或者 差值小于 0.01
-                    return abs(row[BarFields.CLOSE] - row[BarFields.LIMIT_UP]) < 0.01
-
-                curr_limit = is_limit(curr)
-                prev1_limit = is_limit(prev1)
-                prev2_limit = is_limit(prev2)
-                prev3_limit = is_limit(prev3)
-
-                reason = None
-                
-                # 获取近10天的涨停情况，用于排除妖股
-                # 既然要算 sum，我们需要构造一个 Series
-                # 这里为了性能，只取最后10行算一下
-                last_10 = df.iloc[-10:]
-                limit_counts = last_10.apply(is_limit, axis=1) # Boolean Series
-
-                # === 策略逻辑复刻 ===
-                
-                # 模式 A: 1板1调 (昨天板，今天断板且不破板开)
-                if prev1_limit and not curr_limit:
-                    # 排除妖股: 过去[倒数第8天 到 倒数第2天] 涨停数 < 2
-                    if limit_counts.iloc[-8:-2].sum() < 2:
-                        if curr[BarFields.CLOSE] >= prev1[BarFields.OPEN]:
-                            reason = "1板1调"
-
-                # 模式 B: 1板2调 (前天板，昨今断，不破板开)
-                elif prev2_limit and not prev1_limit and not curr_limit:
-                    if limit_counts.iloc[-9:-3].sum() < 2:
-                        if curr[BarFields.CLOSE] >= prev2[BarFields.OPEN]:
-                            reason = "1板2调"
-
-                # 模式 C: 1板3调
-                elif prev3_limit and not prev2_limit and not prev1_limit and not curr_limit:
-                    if limit_counts.iloc[-10:-4].sum() < 2:
-                        if curr[BarFields.CLOSE] >= prev3[BarFields.OPEN]:
-                            reason = "1板3调"
-
-                if reason:
-                    # 计算量比 (和过去5日均量相比)
-                    # volume 是 float
-                    vol_ma5 = df[BarFields.VOLUME].iloc[-6:-1].mean()
-                    vol_ratio = round(curr[BarFields.VOLUME] / vol_ma5, 2) if vol_ma5 > 0 else 0
-
-                    selected_pool.append({
-                        'code_key': code_key,
-                        'code': curr[BarFields.CODE], # 带后缀的代码
-                        'Close': curr[BarFields.CLOSE],
-                        'Vol_Ratio': vol_ratio,
-                        'Pattern': reason,
-                        'select_time': curr.name.strftime('%Y-%m-%d') # 取那一行的 Index 时间
-                    })
-
-            except Exception as e:
-                # print(f"Error: {code_key} - {e}")
-                continue
-
-        # 4. 合并与保存
-        if selected_pool:
-            res_df = pd.DataFrame(selected_pool)
-            
-            # 合并行业信息
-            if not stock_info_df.empty:
-                final_df = pd.merge(res_df, stock_info_df, on='code_key', how='left')
-            else:
-                final_df = res_df
-
-            # 排序
-            if 'industry_name' in final_df.columns:
-                final_df.sort_values(by=['industry_name', 'Pattern'], inplace=True)
-            
-            # 5. 调用父类方法保存
-            # date 参数使用最后一天数据的日期
-            self.save_result(final_df)
+        # 3. [硬过滤] N字反转信号
+        if 'n_pattern_signal' in df_today.columns:
+            # 筛选 signal == 1
+            df_candidates = df_today[df_today['n_pattern_signal'] == 1].copy()
         else:
-            print(f"[{self.strategy_name}] ⚠️ 今日无符合条件股票")
+            print("❌ 因子库中缺少 n_pattern_signal 列")
+            return
 
-# 调试用
+        print(f"🔍 符合N字形态初选: {len(df_candidates)} 只")
+        if df_candidates.empty:
+            return
+
+        # 4. [过滤] ST 黑名单
+        if self.valid_whitelist:
+            # 提取 6 位代码
+            df_candidates['code_6'] = df_candidates['code'].apply(lambda x: x[:6])
+            df_candidates = df_candidates[df_candidates['code_6'].isin(self.valid_whitelist)]
+            print(f"🛡️ 去除ST后剩余: {len(df_candidates)} 只")
+
+        if df_candidates.empty:
+            return
+
+        # 5. [AI预测] 三模型打分
+        X = df_candidates[self.features].fillna(0)
+        
+        top_k_per_model = 10
+        selected_indices = set()
+        
+        # 记录每个模型的打分
+        for name, model in self.models.items():
+            scores = model.predict(X)
+            col_name = f'score_{name}'
+            df_candidates[col_name] = scores
+            
+            # 取该模型的 Top K
+            top_df = df_candidates.nlargest(top_k_per_model, col_name)
+            # selected_indices.update(top_df.index.tolist())
+            selected_indices.update(top_df['code'].tolist())
+
+            print(f"   🤖 {name} 推荐: {top_df['code'].tolist()}")
+
+        # 6. [并集] 取三个模型 Top K 的并集作为最终池
+        # final_pool = df_candidates.loc[list(selected_indices)].copy()
+        final_pool = df_candidates[df_candidates['code'].isin(selected_indices)].copy()
+
+        # 计算平均分用于最终排序
+        score_cols = [c for c in final_pool.columns if c.startswith('score_')]
+        final_pool['score_avg'] = final_pool[score_cols].mean(axis=1)
+        
+        # 排序
+        final_pool.sort_values(by='score_avg', ascending=False, inplace=True)
+        
+        # 7. 格式化输出
+        result_df = final_pool[['code', 'score_avg', 'close']].copy()
+        result_df['reason'] = 'AI_N_Pattern_Ensemble'
+        result_df['date'] = date
+        
+        print(f"\n🎉 最终入选股票池 ({len(result_df)} 只):")
+        print(result_df)
+        
+        # 8. 保存结果
+        # 8.1. 构造文件名
+        if isinstance(date, str):
+            date_str = date.replace('-', '')
+        else:
+            date_str = date.strftime('%Y%m%d')
+            
+        filename = f"{date_str}.csv"
+        
+        # 8.2. 构造保存路径 (使用 config 里的 STRATEGY_WORKSPACE)
+        from config.path_config import STRATEGY_WORKSPACE
+        # 策略子文件夹
+        save_dir = STRATEGY_WORKSPACE / self.strategy_name
+        save_dir.mkdir(parents=True, exist_ok=True)
+        
+        save_path = save_dir / filename
+        
+        # 8.3. 保存
+        result_df.to_csv(save_path, index=False, encoding='utf-8-sig')
+        print(f"💾 结果已保存至: {save_path}")
+        # 9. 保存 (父类方法)
+        self.save_result(result_df)
+
 if __name__ == "__main__":
+    # 这里的 hack 是为了让单独右键运行该文件也能成功
+    # 实际上应该通过 run_daily_selection.py 运行
     s = NPatternSelector()
-    s.run()
+    # 找一个最近的有数据的日期测试 (例如上周五)
+    s.run(date="2025-12-18") 
+    # s.run() # 默认跑今天

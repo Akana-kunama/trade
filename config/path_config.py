@@ -34,4 +34,20 @@ TEMP_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR = PROJECT_ROOT / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
+# ... (保留原有的 PROJECT_ROOT, DATA_ROOT 等定义)
+
+# ================= 因子工厂路径 (Factor Lab) =================
+# 因子库根目录
+FACTOR_LAB_DIR = PROJECT_ROOT / "factor_lab"
+# 因子存储目录
+FACTOR_STORE_DIR = FACTOR_LAB_DIR / "storage" / "stock_factors"
+# 市场因子文件
+MARKET_FACTOR_PATH = FACTOR_LAB_DIR / "storage" / "market_factors.csv"
+
+# ================= 模型工厂路径 (Model Factory) =================
+MODEL_FACTORY_DIR = PROJECT_ROOT / "model_factory"
+# 模型仓库 (Model Zoo)
+MODEL_ZOO_DIR = MODEL_FACTORY_DIR / "model_zoo"
+MODEL_ZOO_DIR.mkdir(parents=True, exist_ok=True)
+
 print(f"✅ 项目根目录定位: {PROJECT_ROOT}")
