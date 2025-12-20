@@ -20,3 +20,6 @@ class TushareConfig:
 
 # ================= 其他数据源配置 =================
 # 比如 Qlib, AkShare 等可以后续加在这里
+class WechatConfig:
+    # 企业微信机器人的 Key (敏感信息放这里)
+    WEBHOOK_KEY = "238495d7-921a-4b33-8835-ce49cbe3835d"

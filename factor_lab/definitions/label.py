@@ -33,3 +33,21 @@ class StrategyLabel(BaseFactor):
         # 综合
         final_cond = cond_1 & cond_2 & cond_3
         return final_cond.fillna(False).astype(int)
+class ShortTermLabel(BaseFactor):
+    name = "label_short_term"  # 新标签名
+    description = "短期冲高标签 (仅看T+1，不看T+2)"
+    
+    def compute(self, df):
+        # 获取未来数据
+        next_close = df['close'].shift(-1)
+        next_open = df['open'].shift(-1)
+        next_high = df['high'].shift(-1)
+
+        # 逻辑复刻 (去掉 cond_3)
+        # 1. 收阳
+        cond_1 = next_close > next_open
+        # 2. 冲高 > 3%
+        cond_2 = (next_high - next_open) / next_open > 0.03
+        
+        final_cond = cond_1 & cond_2
+        return final_cond.fillna(False).astype(int)

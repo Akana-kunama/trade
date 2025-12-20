@@ -6,115 +6,103 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-# ================= 路径 Hack (关键修复) =================
-# 让脚本能找到项目根目录 D:\work\trade
-# 当前文件在 strategy_pool/selectors/policy/ (3层深)
+# ================= 路径 Hack =================
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-# ================= 正常 Import =================
-# 注意：是从 config.path_config 导入，而不是直接从 config 导入
+# ================= Imports =================
 from config.path_config import BASIC_INFO_DIR, FACTOR_STORE_DIR, MARKET_FACTOR_PATH
 from strategy_pool.selectors.policy.base_selector import SelectorBase
 
-# 引入 AI 工厂组件
 from factor_lab.service.data_provider import FeatureService
 from model_factory.registry import ModelRegistry
+from toolbox.messengers.wechat_bot import WechatBot
 
 class NPatternSelector(SelectorBase):
     def __init__(self):
         super().__init__(strategy_name="n_pattern_rebound")
         
-        # 1. 基础服务初始化
         self.svc = FeatureService(str(FACTOR_STORE_DIR), str(MARKET_FACTOR_PATH))
         self.registry = ModelRegistry()
+        self.bot = WechatBot()
         
-        # 2. 加载基础信息 (用于ST过滤)
         self.stock_info_path = BASIC_INFO_DIR / "stock.csv"
         self.valid_whitelist, self.info_df = self._load_stock_info()
 
-        # 3. [自动加载] 加载 n_pattern 系列最新的三个模型
         self.models = {}
         self.features = [] 
         self._load_latest_models()
 
     def _load_stock_info(self):
-        """读取 ST 状态 / 白名单"""
+        """加载基础信息"""
         if not self.stock_info_path.exists():
-            print(f"⚠️ [Warn] 股票信息表不存在: {self.stock_info_path}")
             return set(), pd.DataFrame()
         try:
-            # 兼容读取
             try:
-                df = pd.read_csv(self.stock_info_path, dtype={'code': str}, encoding='utf-8')
+                df = pd.read_csv(self.stock_info_path, dtype={'order_book_id': str}, encoding='utf-8')
             except:
-                df = pd.read_csv(self.stock_info_path, dtype={'code': str}, encoding='gbk')
-                
-            # 假设 CSV 里有 special_type 列，没有就全都要
-            if 'special_type' in df.columns:
-                df = df[df['special_type'] == 'Normal']
+                df = pd.read_csv(self.stock_info_path, dtype={'order_book_id': str}, encoding='gbk')
             
-            # 标准化 code 为 6位字符串
-            if 'code' in df.columns:
-                valid_codes = set(df['code'].apply(lambda x: str(x)[:6]))
-                return valid_codes, df
-            return set(), df
-        except Exception as e:
-            print(f"⚠️ 加载股票信息出错: {e}")
+            if 'order_book_id' in df.columns:
+                df['code_key'] = df['order_book_id'].astype(str).str[:6]
+            else:
+                return set(), pd.DataFrame()
+
+            if 'special_type' in df.columns:
+                normal_df = df[df['special_type'] == 'Normal'].copy()
+            else:
+                normal_df = df.copy()
+            
+            cols_needed = ['code_key', 'symbol', 'industry_name']
+            cols_exist = [c for c in cols_needed if c in normal_df.columns]
+            info_df = normal_df[cols_exist].copy()
+            
+            valid_codes = set(normal_df['code_key'].values)
+            return valid_codes, info_df
+
+        except Exception:
             return set(), pd.DataFrame()
 
     def _load_latest_models(self):
-        """自动去 Model Zoo 找最新的三个模型"""
-        target_models = {
-            "lgbm": "n_pattern/v1_lgbm",
-            "xgb":  "n_pattern/v1_xgb",
-            "cat":  "n_pattern/v1_cat"
+        """加载6个模型"""
+        target_prefixes = {
+            "label1_lgbm": "n_pattern/v1_lgbm_label_strategy",
+            "label1_xgb":  "n_pattern/v1_xgb_label_strategy",
+            "label1_cat":  "n_pattern/v1_cat_label_strategy",
+            "label2_lgbm": "n_pattern/v1_lgbm_label_short_term",
+            "label2_xgb":  "n_pattern/v1_xgb_label_short_term",
+            "label2_cat":  "n_pattern/v1_cat_label_short_term",
         }
         
         first_load = True
-        for name, prefix in target_models.items():
-            # 自动查找最新ID
+        print("📥 正在加载 AI 模型组...")
+        for name, prefix in target_prefixes.items():
             latest_id = self.registry.get_latest_id(prefix)
-            
             if not latest_id:
-                print(f"❌ [Error] 找不到 {name} 的模型！请先运行 scripts/train_n_pattern.py")
+                print(f"   ⚠️ 缺失: {name}")
                 continue
-                
             try:
-                # 加载
                 model, meta = self.registry.load_model(latest_id)
                 self.models[name] = model
-                
                 if first_load:
                     self.features = meta['config']['features']
                     first_load = False
-                print(f"✅ 模型 {name} 加载成功")
             except Exception as e:
-                print(f"❌ 模型 {name} 加载失败: {e}")
+                print(f"   ❌ 加载失败 {name}: {e}")
 
     def run(self, date=None):
-        """
-        选股主入口
-        """
-        # 如果没传日期，默认今天
         if date is None:
             date = datetime.now().strftime('%Y-%m-%d')
         
-        print(f"\n>>> [AI Strategy] 启动 N字反转选股: {date}")
+        print(f"\n>>> [AI Strategy] 启动 N字反转双模选股: {date}")
         
-        # 1. 扫描所有股票代码
+        # 1. 扫描与过滤代码
         all_codes = [f.stem for f in FACTOR_STORE_DIR.glob("*.parquet")]
-        print(f"📋 扫描因子库，共 {len(all_codes)} 只股票")
         target_codes = [c for c in all_codes if re.match(r'^(00|60)', c)]
-        print(f"📋 扫描主板股票: {len(target_codes)} 只 (已过滤300/688)")
-        # 2. 获取数据 (Features + Signal)
-        if not self.features:
-            print("❌ 模型未加载成功，无法获取特征列表")
-            return
-
-        req_cols = list(set(self.features + ['n_pattern_signal', 'close']))
         
+        # 2. 取数
+        req_cols = list(set(self.features + ['n_pattern_signal', 'close']))
         try:
             df_today = self.svc.get_features(
                 codes=target_codes,
@@ -122,29 +110,26 @@ class NPatternSelector(SelectorBase):
                 start_date=date,
                 end_date=date
             )
-        except Exception as e:
-            print(f"❌ 获取特征数据失败: {e}")
+        except Exception:
             return
-        
+
         if df_today.empty:
-            print(f"⚠️ 日期 {date} 无数据 (可能是非交易日或数据未更新)")
+            print(f"⚠️ {date} 无数据")
             return
 
-        # 3. [硬过滤] N字反转信号
-        if 'n_pattern_signal' in df_today.columns:
-            # 筛选 signal == 1
-            df_candidates = df_today[df_today['n_pattern_signal'] == 1].copy()
-        else:
-            print("❌ 因子库中缺少 n_pattern_signal 列")
+        # 3. 筛选 N字反转
+        if 'n_pattern_signal' not in df_today.columns:
+            print("❌ 缺失 n_pattern_signal")
             return
-
-        print(f"🔍 符合N字形态初选: {len(df_candidates)} 只")
+            
+        df_candidates = df_today[df_today['n_pattern_signal'] == 1].copy()
+        print(f"🔍 N字反转初选: {len(df_candidates)} 只")
+        
         if df_candidates.empty:
             return
 
-        # 4. [过滤] ST 黑名单
+        # 4. 筛选 ST
         if self.valid_whitelist:
-            # 提取 6 位代码
             df_candidates['code_6'] = df_candidates['code'].apply(lambda x: x[:6])
             df_candidates = df_candidates[df_candidates['code_6'].isin(self.valid_whitelist)]
             print(f"🛡️ 去除ST后剩余: {len(df_candidates)} 只")
@@ -152,71 +137,153 @@ class NPatternSelector(SelectorBase):
         if df_candidates.empty:
             return
 
-        # 5. [AI预测] 三模型打分
+        # 5. AI 打分
         X = df_candidates[self.features].fillna(0)
-        
-        top_k_per_model = 10
-        selected_indices = set()
-        
-        # 记录每个模型的打分
         for name, model in self.models.items():
-            scores = model.predict(X)
-            col_name = f'score_{name}'
-            df_candidates[col_name] = scores
+            df_candidates[f'score_{name}'] = model.predict(X)
+
+        # 6. [核心修正] 集合运算 (基于 Code 字符串，而非 Index)
+        TOP_K_PER_MODEL = 10
+        TARGET_POOL_SIZE = 13 # 目标总数：共振 + 补录
+        
+        # --- 集合 1: Label Strategy 的代码集 ---
+        set1_codes = set()
+        for algo in ['lgbm', 'xgb', 'cat']:
+            key = f'score_label1_{algo}'
+            if key in df_candidates.columns:
+                top = df_candidates.nlargest(TOP_K_PER_MODEL, key)
+                set1_codes.update(top['code'].tolist()) # [Fix] 用 code
+        
+        # --- 集合 2: Label ShortTerm 的代码集 ---
+        set2_codes = set()
+        for algo in ['lgbm', 'xgb', 'cat']:
+            key = f'score_label2_{algo}'
+            if key in df_candidates.columns:
+                top = df_candidates.nlargest(TOP_K_PER_MODEL, key)
+                set2_codes.update(top['code'].tolist()) # [Fix] 用 code
+        
+        # --- 集合 3: 交集 (共振) ---
+        resonance_codes = list(set1_codes & set2_codes)
+        
+        # 计算加权平均分 (所有6个模型)
+        score_cols = [c for c in df_candidates.columns if c.startswith('score_')]
+        df_candidates['final_score'] = df_candidates[score_cols].mean(axis=1)
+        
+        final_selected_codes = [] # 最终所有入选的代码 (用于生成CSV)
+        
+        # === 阶段 A: 共振股 (Message 1) ===
+        df_resonance = pd.DataFrame()
+        msg_resonance = ""
+        
+        if resonance_codes:
+            # 使用 code 列进行筛选 [Fix]
+            df_resonance = df_candidates[df_candidates['code'].isin(resonance_codes)].copy()
+            df_resonance.sort_values(by='final_score', ascending=False, inplace=True)
             
-            # 取该模型的 Top K
-            top_df = df_candidates.nlargest(top_k_per_model, col_name)
-            # selected_indices.update(top_df.index.tolist())
-            selected_indices.update(top_df['code'].tolist())
-
-            print(f"   🤖 {name} 推荐: {top_df['code'].tolist()}")
-
-        # 6. [并集] 取三个模型 Top K 的并集作为最终池
-        # final_pool = df_candidates.loc[list(selected_indices)].copy()
-        final_pool = df_candidates[df_candidates['code'].isin(selected_indices)].copy()
-
-        # 计算平均分用于最终排序
-        score_cols = [c for c in final_pool.columns if c.startswith('score_')]
-        final_pool['score_avg'] = final_pool[score_cols].mean(axis=1)
-        
-        # 排序
-        final_pool.sort_values(by='score_avg', ascending=False, inplace=True)
-        
-        # 7. 格式化输出
-        result_df = final_pool[['code', 'score_avg', 'close']].copy()
-        result_df['reason'] = 'AI_N_Pattern_Ensemble'
-        result_df['date'] = date
-        
-        print(f"\n🎉 最终入选股票池 ({len(result_df)} 只):")
-        print(result_df)
-        
-        # 8. 保存结果
-        # 8.1. 构造文件名
-        if isinstance(date, str):
-            date_str = date.replace('-', '')
+            final_selected_codes.extend(df_resonance['code'].tolist())
+            msg_resonance = self._format_wechat_msg("🚀【双模共振股】(置信度高)", df_resonance)
+            print(f"🎯 共振股: {len(df_resonance)} 只")
         else:
-            date_str = date.strftime('%Y%m%d')
-            
-        filename = f"{date_str}.csv"
+            msg_resonance = "🚀【双模共振股】\n今日无双模共振标的"
+
+        # === 阶段 B: 补录股 (Message 2) ===
+        remaining_slots = TARGET_POOL_SIZE - len(final_selected_codes)
+        df_supplement = pd.DataFrame()
+        msg_supplement = ""
         
-        # 8.2. 构造保存路径 (使用 config 里的 STRATEGY_WORKSPACE)
+        if remaining_slots > 0:
+            # 排除已选的 [Fix: 使用 ~isin]
+            candidates_left = df_candidates[~df_candidates['code'].isin(final_selected_codes)]
+            
+            # 策略：优先从两个集合的并集里找，按分高低补录
+            union_codes = list(set1_codes | set2_codes)
+            # 在剩余池中，属于并集的
+            df_union_left = candidates_left[candidates_left['code'].isin(union_codes)]
+            
+            # 先从并集剩余里选
+            supplement_1 = df_union_left.nlargest(remaining_slots, 'final_score')
+            
+            # 如果还不够，从全量剩余里选
+            needed_more = remaining_slots - len(supplement_1)
+            supplement_2 = pd.DataFrame()
+            if needed_more > 0:
+                others = candidates_left.drop(supplement_1.index) # 这里可以用index drop因为是同一df
+                supplement_2 = others.nlargest(needed_more, 'final_score')
+                
+            df_supplement = pd.concat([supplement_1, supplement_2])
+            final_selected_codes.extend(df_supplement['code'].tolist())
+            
+            msg_supplement = self._format_wechat_msg("👀【补充关注股】(模型高分)", df_supplement)
+            print(f"📉 补录股: {len(df_supplement)} 只")
+        else:
+            msg_supplement = "👀【补充关注股】\n共振股已满额，无需补录"
+
+        # 7. 生成最终 CSV (包含共振+补录，共10只左右)
+        # [Fix] 使用 isin(final_selected_codes)
+        final_df = df_candidates[df_candidates['code'].isin(final_selected_codes)].copy()
+        final_df.sort_values(by='final_score', ascending=False, inplace=True)
+        
+        # 关联信息
+        final_df['code_key'] = final_df['code'].apply(lambda x: x[:6])
+        if not self.info_df.empty:
+            final_df = pd.merge(final_df, self.info_df, on='code_key', how='left')
+            final_df['symbol'] = final_df['symbol'].fillna(final_df['code'])
+            final_df['industry_name'] = final_df['industry_name'].fillna('-')
+        else:
+            final_df['symbol'] = final_df['code']
+            final_df['industry_name'] = '-'
+
+        # 整理输出
+        output_cols = ['code', 'symbol', 'final_score', 'industry_name', 'close']
+        result_df = final_df[output_cols].copy()
+        result_df.rename(columns={'final_score': 'score'}, inplace=True)
+        
+        print("\n🎉 最终输出池:")
+        print(result_df)
+
+        # 8. 保存与发送
+        self._save_to_csv(result_df, date)
+        
+        print("\n📨 推送微信...")
+        self.bot.send_text(msg_resonance)
+        self.bot.send_text(msg_supplement)
+
+    def _format_wechat_msg(self, title, df):
+        if df.empty: return f"{title}\n无"
+        
+        # 临时 merge symbol
+        df_temp = df.copy()
+        df_temp['code_key'] = df_temp['code'].apply(lambda x: x[:6])
+        if not self.info_df.empty:
+            df_temp = pd.merge(df_temp, self.info_df, on='code_key', how='left')
+            df_temp['symbol'] = df_temp['symbol'].fillna('')
+            df_temp['industry_name'] = df_temp['industry_name'].fillna('')
+        else:
+            df_temp['symbol'] = df_temp['code']
+            df_temp['industry_name'] = '-'
+            
+        msg = [title]
+        # 优化排版：代码 | 名称 | 分数
+        msg.append(f"{'代码':<7} {'名称':<5} {'分':<4}")
+        msg.append("-" * 20)
+        
+        for _, row in df_temp.iterrows():
+            c = row['code'][:6]
+            n = row['symbol'][:4]
+            s = f"{row['final_score']:.2f}"
+            msg.append(f"{c} {n} {s}")
+            
+        return "\n".join(msg)
+
+    def _save_to_csv(self, df, date_str):
         from config.path_config import STRATEGY_WORKSPACE
-        # 策略子文件夹
+        clean_date = date_str.replace('-', '')
         save_dir = STRATEGY_WORKSPACE / self.strategy_name
         save_dir.mkdir(parents=True, exist_ok=True)
-        
-        save_path = save_dir / filename
-        
-        # 8.3. 保存
-        result_df.to_csv(save_path, index=False, encoding='utf-8-sig')
-        print(f"💾 结果已保存至: {save_path}")
-        # 9. 保存 (父类方法)
-        self.save_result(result_df)
+        file_path = save_dir / f"{clean_date}.csv"
+        df.to_csv(file_path, index=False, encoding='utf-8-sig')
+        print(f"💾 保存: {file_path}")
 
 if __name__ == "__main__":
-    # 这里的 hack 是为了让单独右键运行该文件也能成功
-    # 实际上应该通过 run_daily_selection.py 运行
     s = NPatternSelector()
-    # 找一个最近的有数据的日期测试 (例如上周五)
-    s.run(date="2025-12-18") 
-    # s.run() # 默认跑今天
+    s.run(date="2025-12-18")
