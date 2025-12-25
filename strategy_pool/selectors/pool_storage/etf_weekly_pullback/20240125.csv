@@ -1,0 +1,4 @@
+﻿code,select_time,trade_time,behave,strategy_name,date
+508001.SH,2024-01-25,2024-01-26,PASS,etf_weekly_pullback,20240125
+513000.SH,2024-01-25,2024-01-26,PASS,etf_weekly_pullback,20240125
+513290.SH,2024-01-25,2024-01-26,PASS,etf_weekly_pullback,20240125

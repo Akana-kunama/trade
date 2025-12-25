@@ -5,4 +5,4 @@ pyyaml
 pyarrow
 fastparquet
 matplotlib
-pandas_market_calendar
+pandas_market_calendars

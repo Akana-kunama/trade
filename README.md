@@ -1,21 +1,37 @@
-编写一份清晰、专业的 `README.md` 是项目工程化非常重要的一步。它不仅是你自己未来的备忘录，也是团队协作或开源展示的门面。
+# QuantProject 2.0 - AI 驱动的工程化量化交易系统
 
-基于我们构建的 **QuantProject 2.0** 架构，我为你撰写了一份完整的 README 模板。你可以直接复制到项目根目录下的 `README.md` 文件中。
+[![System Status](https://img.shields.io/badge/System-Active_Development-brightgreen)](https://github.com/yourusername/QuantProject)
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue)](https://www.python.org/)
+[![Broker Interface](https://img.shields.io/badge/Broker-QMT_(Mini)-orange)](http://www.thinktrader.net/)
 
------
+**QuantProject 2.0** 是一个基于 Python 构建的现代化、模块化量化交易框架。它打破了传统脚本式量化的局限，引入了 **MLOps（机器学习运维）** 理念，实现了从数据清洗、特征工程、模型训练、策略决策到实盘交易的全链路自动化闭环。
 
-# QuantProject 2.0 - 模块化量化交易系统
+---
 
-**QuantProject 2.0** 是一个基于 Python 开发的工程化量化交易框架。它采用分层架构设计，实现了数据采集、因子计算、策略研究与实盘交易的完全解耦。
+## 🌟 核心特性 (Key Features)
 
-本框架核心特点：
+### 1. 🏗️ 存算分离的因子工厂 (Factor Lab)
+* **标准化定义**：通过继承 `BaseFactor` 即可定义因子，支持 Pandas/Numpy 向量化计算。
+* **增量更新引擎**：智能识别数据时间戳，仅计算新增数据，极大降低每日维护耗时。
+* **特征仓库 (Feature Store)**：计算结果落盘为 Parquet，支持按列极速读取，彻底解决重复计算痛点。
 
-  * **多源异构数据支持**：通过适配器模式（Adapter）统一管理 QMT、Tushare 等不同数据源。
-  * **产研分离**：策略逻辑（Logic）与策略产出（Artifacts/股票池）物理分离，便于回溯与组合管理。
-  * **标准化数据流**：全链路采用 Parquet 存储与标准 BarData 结构，确保回测与实盘的一致性。
-  * **A股特色适配**：内置精确的A股涨跌停价格计算（处理四舍五入精度问题）及 ST 股过滤逻辑。
+### 2. 🤖 AI 模型流水线 (Model Factory)
+* **多模型集成**：内置 LightGBM, XGBoost, CatBoost 三大树模型封装，开箱即用，支持拓展。
+* **模型仓库 (Model Zoo)**：自动管理模型版本，保存训练元数据（特征列表、时间跨度、性能指标），支持一键加载最新模型。
+* **配置驱动**：数据加载、特征筛选、标签定义完全通过配置解耦。
 
------
+### 3. 🛡️ 稳健的工程架构
+* **多源异构数据支持**：通过适配器模式（Adapter）统一管理 QMT、Tushare 等不同数据源。
+* **A股特色适配**：内置精确的A股涨跌停价格计算（处理特殊的四舍五入精度问题）及 ST 股/科创板/非交易日过滤逻辑。
+* **标准化数据流**：全链路采用 Parquet 存储与标准 `BarData` 结构，确保回测与实盘的一致性。
+
+### 4. 策略执行与工具
+* **选股策略逻辑**：支持选股策略自定义，选股策略对应股票池。
+* **择时策略逻辑**：支持择时策略自定义，选股策略与择时逻辑互相组合。
+* **生产级交易**：支持按金额/手数买入、按比例/手数卖出；下单前自动检查持仓可用与价格偏离度。
+* **实时监控**：集成企业微信/钉钉机器人，实时推送交易指令与选股日报。
+
+---
 
 ## 📂 目录结构说明
 
@@ -28,128 +44,136 @@ QuantProject/
 ├── common/                     # [基础设施]
 │   ├── data_structs.py         # 标准数据结构定义 (BarData, Order)
 │   └── constants.py            # 全局常量 (BarFields)
-├── data_center/                # [数据工厂]
-│   ├── collectors/             # 数据下载适配器 (QMT/Tushare/Qlib)
-│   ├── storage/                # 数据落地 (Parquet文件仓库)
+├── data_center/                # [数据工厂] ETL层
+│   ├── collectors/             # 数据下载适配器 (QMT/Tushare)
+│   ├── storage/                # 原始行情 (不可变数据, Parquet)
 │   │   ├── market_data/        # 日线/分钟线行情
 │   │   └── basic_info/         # 静态基础表 (stock.csv)
 │   └── data_proxy.py           # 统一数据读取接口
-├── strategy_pool/              # [策略大脑]
+├── factor_lab/                 # [因子工厂] Feature Engineering
+│   ├── definitions/            # 因子逻辑 (技术指标, Label, 形态)
+│   ├── engine/                 # 增量计算与落盘引擎
+│   ├── service/                # 对外统一取数接口 (FeatureService)
+│   └── storage/                # 因子特征库 (stock_factors/*.parquet)
+├── model_factory/              # [模型工厂] AI Core
+│   ├── data_loader.py          # 数据集构建 (自动处理Index/Filter)
+│   ├── registry.py             # 模型保存、加载、版本控制
+│   ├── models/                 # 算法封装 (LGBM/XGB/Cat)
+│   └── model_zoo/              # 训练产物归档 (按实验名分类)
+├── strategy_pool/              # [策略大脑] Decision Making
 │   ├── selectors/              # 选股模块
 │   │   ├── policy/             # 策略逻辑代码 (如: NPatternSelector)
-│   │   └── pool_storage/       # 策略产出结果 (CSV股票池，按策略名分文件夹)
+│   │   └── pool_storage/       # 策略产出结果 (CSV股票池)
 │   └── timers/                 # 择时/交易信号模块
-├── engines/                    # [执行引擎] (开发中)
+├── engines/                    # [执行引擎] Execution
 │   ├── backtest/               # 回测引擎
-│   └── trading/                # 实盘交易引擎 (对接 QMT)
+│   └── trading/                # 实盘交易引擎 (RealTrader, 微信Bot)
 ├── scripts/                    # [任务脚本] 系统的入口 (Crontab 调度)
-│   ├── run_daily_data.py       # 每日收盘：数据更新
-│   └── run_daily_selection.py  # 数据更新后：运行选股
-└── toolbox/                    # [工具箱] 消息推送、监控、报表
-```
-
------
-
-## 🚀 快速开始 (Quick Start)
-
-### 1\. 环境准备
-
+└── toolbox/                    # [工具箱] 消息推送、监控、报表🚀 快速开始 (Quick Start)
+1. 环境准备
 推荐使用 Anaconda 管理 Python 环境（建议 Python 3.8+）。
 
-```bash
+Bash
+
 # 安装依赖
 pip install -r requirements.txt
-```
+注意：如果你使用 QMT 作为数据源/交易接口，你需要引用 QMT 自带的 Python 库 (xtquant)。请确保你的 Python 环境能加载 xtquant。
 
-**注意**：如果你使用 QMT 作为数据源/交易接口，你需要引用 QMT 自带的 Python 库 (`xtquant`)。请确保你的 Python 环境能加载 `xtquant`，或者直接使用 QMT 自带的 Python 解释器。
+2. 配置项目
+打开 config/account_config.py。
 
-### 2\. 配置项目
+配置你的 QMT 安装路径（MINI_QMT_PATH）、账号信息以及微信推送 Key。
 
-1.  打开 `config/account_config.py`。
-2.  配置你的 QMT 安装路径（`MINI_QMT_PATH`）和账号信息。
-3.  确保 `data_center/storage/basic_info/` 下存在 `stock.csv`（基础股票信息表，包含行业、上市状态等）。
+确保 data_center/storage/basic_info/ 下存在 stock.csv（基础股票信息表）。
 
-### 3\. 数据更新
+3. 标准工作流 (Workflow)
+本系统设计为脚本驱动，适合部署在服务器或本地通过 Task Scheduler 运行。
 
-本系统使用脚本化驱动。在每日收盘后（或首次运行时），运行数据更新脚本：
+阶段一：每日收盘后 (T+0 盘后)
+更新基础数据 下载最新的日线行情数据，自动计算并清洗涨跌停状态。
 
-```bash
-# 该脚本会自动调用 QMT 接口下载最近 N 天数据，清洗并存为 Parquet
+Bash
+
 python scripts/run_daily_data.py
-```
+更新因子库 基于新行情，增量计算 MA5、量比、N字反转信号及 Label，并更新 Metadata。
 
-  * **产出**：`data_center/storage/market_data/stock_daily/` 下生成 `000001.SZ.parquet` 等文件。
-  * **特色**：数据中已自动计算并补全了 `limit_up` (涨停价) 和 `limit_down` (跌停价)。
+Bash
 
-### 4\. 运行选股策略
+python scripts/run_daily_factors.py
+运行选股策略 加载 Model Zoo 中最新的模型，预测明日目标，生成 CSV 并推送微信。
 
-当数据更新完成后，运行选股脚本：
+Bash
 
-```bash
-# 运行配置好的所有选股策略 (如 N字反包策略)
 python scripts/run_daily_selection.py
-```
+阶段二：模型迭代 (周末/定期)
+当积累了足够多的新数据后，重新训练 AI 模型以适应市场变化。
 
-  * **产出**：`strategy_pool/selectors/pool_storage/{策略名}/{日期}.csv`。
-  * **结果**：CSV 中包含选出的股票代码、入选理由、模型打分等。
+训练模型：该脚本会自动训练设定 Label 下的多种算法模型，并保存到 model_factory/model_zoo/。
 
------
+Bash
 
-## 🛠️ 数据获取与扩展
+python scripts/train_n_pattern.py
+阶段三：实盘交易 (T+1 盘中)
+自动交易：读取昨晚生成的选股 CSV，自动执行买入操作；或根据策略执行卖出。
 
-本框架支持多种数据源接入，核心代码位于 `data_center/collectors/`。
+Bash
 
-### 当前支持
+python scripts/run_live_trading.py
+🛠️ 二次开发指南 (Developer Guide)
+1. 如何增加一个新的因子？
+无需修改引擎代码，只需在 factor_lab/definitions/ 下新建 Python 文件：
 
-  * **QMT (xtquant)**: 默认适配器 `adapter_qmt.py`。
-      * 逻辑：下载历史数据 -\> 清洗 -\> **计算精确涨跌停** -\> 存入 Parquet。
-      * 优势：实盘数据源，无需额外付费，支持 Tick 级合成。
+Python
 
-### 如何扩展其他数据源 (如 Tushare)
+from .base import BaseFactor
 
-1.  在 `data_center/collectors/` 下新建 `adapter_tushare.py`。
-2.  实现 ETL 逻辑，确保输出的 DataFrame 列名符合 `common.data_structs.BarFields` 定义的标准：
-      * `datetime` (索引)
-      * `code`
-      * `open`, `high`, `low`, `close`, `volume`, `amount`
-      * `adj_factor` (复权因子)
-3.  在 `scripts/run_daily_data.py` 中引入并调用该 Adapter。
+class MyNewFactor(BaseFactor):
+    name = "rsi_14"
+    description = "14日RSI指标"
+    
+    def compute(self, df):
+        # 实现你的计算逻辑，返回 Series
+        return rsi_series
+然后在 definitions/__init__.py 中 import 它。下次运行 run_daily_factors.py 时，系统会自动计算并存储该因子。
 
------
+2. 如何扩展其他数据源 (如 Tushare)？
+在 data_center/collectors/ 下新建 adapter_tushare.py。
 
-## 🧠 策略开发指南
+实现 ETL 逻辑，确保输出的 DataFrame 列名符合 common.data_structs.BarFields 定义的标准（open, high, low, close, volume, adj_factor 等）。
 
-### 添加一个新的选股策略
+在 scripts/run_daily_data.py 中引入并调用该 Adapter。
 
-1.  **新建文件**：在 `strategy_pool/selectors/policy/` 下新建 `my_strategy.py`。
-2.  **继承基类**：
-    ```python
-    from strategy_pool.selectors.policy.base_selector import SelectorBase
+3. 如何增加一个新的选股策略？
+在 strategy_pool/selectors/policy/ 下新建 my_strategy.py 并继承 SelectorBase。
 
-    class MyStrategy(SelectorBase):
-        def __init__(self):
-            super().__init__(strategy_name="my_super_strategy") # 定义策略名
-        
-        def run(self):
-            # ... 你的选股逻辑 ...
-            # ... 生成 result_df ...
-            self.save_result(result_df) # 自动保存到对应文件夹
-    ```
-3.  **注册运行**：在 `scripts/run_daily_selection.py` 中实例化并调用 `.run()`。
+在 run() 方法中调用 FeatureService 获取数据，或调用 ModelRegistry 加载模型进行预测。
 
------
+在 scripts/run_daily_selection.py 中注册运行。
 
-## ⚠️ 注意事项
+⚠️ 注意事项与免责声明
+涨跌停精度：A股涨跌停计算采用特殊的四舍五入规则（非银行家舍入），本框架在 adapter_qmt.py 中已做特殊处理，请勿随意修改相关算法。
 
-1.  **涨跌停精度**：A股涨跌停计算采用特殊的四舍五入规则（非银行家舍入），本框架在 `adapter_qmt.py` 中已做特殊处理，请勿随意修改相关算法。
-2.  **文件覆盖**：目前数据更新脚本采用覆盖写入模式（全量更新最近 N 天），适合中低频策略。如需更高性能，可改为 Append 增量写入模式。
-3.  **路径引用**：在代码中引用文件路径时，请务必使用 `config.path_config` 中的变量，不要硬编码绝对路径。
+数据一致性：run_daily_data.py 默认采用覆盖更新模式（最近N天），适合中低频策略。如需更高性能，可自行改为 Append 模式。
 
------
+风险提示：
 
-### 📝 TODO List
-  - [ ] 其他数据源获取接口对接
-  - [ ] 实盘交易引擎 (Engine) 对接
-  - [ ] 盘中分钟级择时信号
-  - [ ] 飞书/钉钉 消息推送集成
-  - [ ] 简单的 HTML 选股日报生成
+本系统仅供学习与研究使用，实盘交易存在巨大风险。
+
+实盘模块依赖 XtQuant 库及 QMT 客户端，请确保环境配置正确且账号已登录。
+
+AI 模型预测基于历史数据，不代表未来收益保证。
+
+📝 TODO List
+
+
+[ ] Web 看板：开发 Streamlit 界面，可视化展示因子覆盖率与模型 AUC 曲线
+
+[ ] 基本面因子：接入财务数据（PE/PB/ROE），并在 Engine 层实现 merge_asof 对齐
+
+[ ] 数据源接入：接入tushare，qlib等数据源
+
+[ ] 盘中风控：增加监控股票的实盘qmt程序，实现盘中实时监控
+
+[ ] 策略拓展：目前主要完成的N字反转的启动策略，需要拓展N字反转拓展的反包策略，即选出N字之后的跌停在T+1或T+2的反转
+
+[ ] 策略拓展：N字反转也会挖掘到二波策略，即之前多次涨停，目前是在选股层面过滤，可以考虑加入作为分支

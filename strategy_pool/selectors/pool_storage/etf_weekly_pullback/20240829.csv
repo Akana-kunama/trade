@@ -1,0 +1,9 @@
+﻿code,select_time,trade_time,behave,strategy_name,date
+180102.SZ,2024-08-29,2024-08-30,PASS,etf_weekly_pullback,20240829
+180501.SZ,2024-08-29,2024-08-30,PASS,etf_weekly_pullback,20240829
+508027.SH,2024-08-29,2024-08-30,PASS,etf_weekly_pullback,20240829
+512200.SH,2024-08-29,2024-08-30,PASS,etf_weekly_pullback,20240829
+508000.SH,2024-08-29,2024-08-30,PASS,etf_weekly_pullback,20240829
+508021.SH,2024-08-29,2024-08-30,PASS,etf_weekly_pullback,20240829
+508058.SH,2024-08-29,2024-08-30,PASS,etf_weekly_pullback,20240829
+180101.SZ,2024-08-29,2024-08-30,PASS,etf_weekly_pullback,20240829

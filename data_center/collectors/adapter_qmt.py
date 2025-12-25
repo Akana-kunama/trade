@@ -44,8 +44,8 @@ def _calculate_limit_price(code: str, name: str, prev_close: float):
 # ================= 2. QMT 数据加载器类 =================
 
 class QMTDataLoader:
-    def __init__(self):
-        self.save_dir = MARKET_DATA_DIR / "stock_daily"
+    def __init__(self,save_dir=MARKET_DATA_DIR / "stock_daily"):
+        self.save_dir = save_dir
         if not self.save_dir.exists():
             self.save_dir.mkdir(parents=True, exist_ok=True)
 
@@ -172,24 +172,24 @@ class QMTDataLoader:
         print(f"✅ 批次处理完成，更新了 {success_count} 个文件。")
 
     # ================= A. 全量更新模式 =================
-    def run_full_update(self, start_date: str, end_date: str):
+    def run_full_update(self, start_date: str, end_date: str,sector_name='沪深A股'):
         """
         强制指定日期范围进行全量覆盖
         :param start_date: '20200101'
         :param end_date: '20231231'
         """
         print(f"🚀 [模式: 全量更新] 范围: {start_date} ~ {end_date}")
-        stock_list = xtdata.get_stock_list_in_sector('沪深A股')
+        stock_list = xtdata.get_stock_list_in_sector(sector_name)
         # 全量模式直接调用通用方法，模式为 overwrite
         self.fetch_and_update(stock_list, start_date, end_date, mode="overwrite")
 
     # ================= B. 增量更新模式 =================
-    def run_incremental_update(self):
+    def run_incremental_update(self,sector_name='沪深A股'):
         """
         自动检测每只股票的进度，只下载缺失部分
         """
         print(f"🚀 [模式: 增量更新] 正在检查本地数据状态...")
-        stock_list = xtdata.get_stock_list_in_sector('沪深A股')
+        stock_list = xtdata.get_stock_list_in_sector(sector_name)
         
         today = datetime.now()
         today_str = today.strftime('%Y%m%d')

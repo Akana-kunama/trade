@@ -1,3 +1,6 @@
 # 本地行情数据
 data_center/storage/market_data/
 *.parquet
+
+__pycache__/
+*.pyc
